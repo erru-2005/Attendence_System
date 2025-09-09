@@ -1,6 +1,9 @@
 import os
 import sys
 import time
+import json
+import glob
+from io import BytesIO, TextIOWrapper
 from datetime import datetime
 
 import av
@@ -42,6 +45,121 @@ def navigate(page: str):
 
 def back_to_home_button(key: str):
     st.button("\u2190 Back", key=key, on_click=lambda: navigate("home"))
+
+
+# -------------------- Admin/Sidebar Utilities -------------------- #
+
+def _database_dir() -> str:
+    return os.path.join(CURRENT_DIR, "database")
+
+
+def _attendance_dir() -> str:
+    return os.path.join(_database_dir(), "attendance")
+
+
+def _credentials_path() -> str:
+    return os.path.join(_database_dir(), "admin_credentials.json")
+
+
+def ensure_admin_credentials() -> None:
+    os.makedirs(_database_dir(), exist_ok=True)
+    creds_path = _credentials_path()
+    if not os.path.exists(creds_path):
+        with open(creds_path, "w", encoding="utf-8") as f:
+            json.dump({"username": "bbhcadmin", "password": "12345"}, f, indent=2)
+
+
+def verify_admin_credentials(username: str, password: str) -> bool:
+    try:
+        with open(_credentials_path(), "r", encoding="utf-8") as f:
+            creds = json.load(f)
+        return username == creds.get("username") and password == creds.get("password")
+    except Exception:
+        return False
+
+
+def render_sidebar():
+    st.sidebar.title("Navigation")
+    if st.sidebar.button("Home", key="sb-home", use_container_width=True):
+        navigate("home")
+        st.rerun()
+    if st.sidebar.button("Admin", key="sb-admin", use_container_width=True):
+        target = "admin_dashboard" if st.session_state.get("is_admin_authenticated") else "admin_login"
+        navigate(target)
+        st.rerun()
+
+
+def create_tabular_bytes(records: list[dict]):
+    """Return (data_bytes, mime, ext) for Excel if pandas available, else CSV.
+
+    - records: list of {student_id, name, timestamp}
+    """
+    # Normalize order of keys for readability
+    normalized = []
+    for r in records:
+        normalized.append({
+            "student_id": r.get("student_id", ""),
+            "name": r.get("name", ""),
+            "timestamp": r.get("timestamp", ""),
+        })
+
+    try:
+        import pandas as pd  # lazy import; optional dependency
+
+        df = pd.DataFrame(normalized)
+        buffer = BytesIO()
+        # engine chosen automatically; openpyxl/xlsxwriter if present
+        with pd.ExcelWriter(buffer) as writer:
+            df.to_excel(writer, index=False, sheet_name="Attendance")
+        return buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".xlsx"
+    except Exception:
+        # Fallback to CSV
+        try:
+            import csv
+            buffer = BytesIO()
+            # Write UTF-8 BOM so Excel opens it nicely
+            buffer.write("\ufeff".encode("utf-8"))
+            fieldnames = ["student_id", "name", "timestamp"]
+            writer = csv.DictWriter(TextIOWrapper(buffer, encoding="utf-8", write_through=True), fieldnames=fieldnames)
+            writer.writeheader()
+            for row in normalized:
+                writer.writerow(row)
+            return buffer.getvalue(), "text/csv", ".csv"
+        except Exception:
+            # As a last resort, dump JSON bytes
+            data = json.dumps(normalized, ensure_ascii=False, indent=2).encode("utf-8")
+            return data, "application/json", ".json"
+
+
+def list_attendance_files() -> list[tuple[str, str]]:
+    """Return list of (date_str, file_path) sorted by date desc."""
+    directory = _attendance_dir()
+    os.makedirs(directory, exist_ok=True)
+    files = glob.glob(os.path.join(directory, "*.json"))
+    items: list[tuple[str, str]] = []
+    for fp in files:
+        basename = os.path.basename(fp)
+        date_str = os.path.splitext(basename)[0]
+        items.append((date_str, fp))
+    # Sort descending by date string (YYYY-MM-DD format sorts lexicographically)
+    items.sort(key=lambda x: x[0], reverse=True)
+    return items
+
+
+def read_attendance(fp: str) -> list[dict]:
+    try:
+        with open(fp, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+
+def clear_attendance(fp: str) -> None:
+    with open(fp, "w", encoding="utf-8") as f:
+        f.write("[]")
 
 
 RTC_CONFIG = RTCConfiguration({
@@ -411,6 +529,85 @@ def threshold_page():
         st.success(f"Threshold set to {new_val:.2f}")
 
 
+def admin_login_page():
+    ensure_admin_credentials()
+    st.header("Admin Login")
+    back_to_home_button("back-admin-login")
+
+    with st.form("admin_login_form", clear_on_submit=False):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login", type="primary")
+
+    if submitted:
+        if verify_admin_credentials(username.strip(), password):
+            st.session_state.is_admin_authenticated = True
+            st.success("Login successful")
+            navigate("admin_dashboard")
+            st.rerun()
+        else:
+            st.error("Invalid username or password")
+
+
+def admin_dashboard_page():
+    if not st.session_state.get("is_admin_authenticated"):
+        navigate("admin_login")
+        st.warning("Please login to access the admin dashboard.")
+        return
+
+    st.header("Admin Dashboard")
+    back_to_home_button("back-admin")
+
+    files = list_attendance_files()
+    if not files:
+        st.info("No attendance files found.")
+        return
+
+    for date_str, fp in files:
+        st.subheader(date_str)
+        records = read_attendance(fp)
+        st.write(f"Total records: {len(records)}")
+
+        if records:
+            try:
+                import pandas as pd  # optional
+                df = pd.DataFrame(records)
+                st.dataframe(df, use_container_width=True)
+            except Exception:
+                st.json(records)
+        else:
+            st.info("No records for this date.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            data_bytes, mime, ext = create_tabular_bytes(records)
+            st.download_button(
+                label="Create Excel",
+                data=data_bytes,
+                file_name=f"attendance_{date_str}{ext}",
+                mime=mime,
+                key=f"download-{date_str}",
+                use_container_width=True,
+            )
+        with col2:
+            confirm_key = f"confirm-clear-{date_str}"
+            if not st.session_state.get(confirm_key):
+                if st.button("Clear Data", key=f"clear-{date_str}", type="secondary", use_container_width=True):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+            else:
+                st.warning("Are you sure you want to clear this date's data?")
+                c1, c2 = st.columns(2)
+                if c1.button("Confirm", key=f"confirm-{date_str}", type="primary", use_container_width=True):
+                    clear_attendance(fp)
+                    st.session_state[confirm_key] = False
+                    st.success("Data cleared.")
+                    st.rerun()
+                if c2.button("Cancel", key=f"cancel-{date_str}", use_container_width=True):
+                    st.session_state[confirm_key] = False
+                    st.rerun()
+
+
 def router():
     page = st.session_state.get("page", "home")
     if page == "home":
@@ -425,6 +622,10 @@ def router():
         list_students_page()
     elif page == "threshold":
         threshold_page()
+    elif page == "admin_login":
+        admin_login_page()
+    elif page == "admin_dashboard":
+        admin_dashboard_page()
     else:
         navigate("home")
         home_page()
@@ -433,6 +634,8 @@ def router():
 if __name__ == "__main__":
     if "page" not in st.session_state:
         st.session_state.page = "home"
+    ensure_admin_credentials()
+    render_sidebar()
     router()
 
 
