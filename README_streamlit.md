@@ -22,3 +22,4 @@ Notes:
 - The app uses your webcam via WebRTC. Allow camera permission in the browser.
 - Data files are the same as the desktop app under `database/`.
 
+

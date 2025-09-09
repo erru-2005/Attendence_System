@@ -40,8 +40,8 @@ def navigate(page: str):
     st.session_state.page = page
 
 
-def back_to_home_button():
-    st.button("\u2190 Back", on_click=lambda: navigate("home"))
+def back_to_home_button(key: str):
+    st.button("\u2190 Back", key=key, on_click=lambda: navigate("home"))
 
 
 RTC_CONFIG = RTCConfiguration({
@@ -53,23 +53,23 @@ def home_page():
     st.title("Face Recognition Attendance System")
     st.caption("Web interface using Streamlit")
 
-    st.button("Add Student", use_container_width=True, on_click=lambda: navigate("add"))
-    st.button("Take Attendance", use_container_width=True, on_click=lambda: navigate("attendance"))
-    st.button("Delete Student", use_container_width=True, on_click=lambda: navigate("delete"))
-    st.button("List Students", use_container_width=True, on_click=lambda: navigate("list"))
-    st.button("Set Threshold", use_container_width=True, on_click=lambda: navigate("threshold"))
+    st.button("Add Student", key="nav-add", use_container_width=True, on_click=lambda: navigate("add"))
+    st.button("Take Attendance", key="nav-attendance", use_container_width=True, on_click=lambda: navigate("attendance"))
+    st.button("Delete Student", key="nav-delete", use_container_width=True, on_click=lambda: navigate("delete"))
+    st.button("List Students", key="nav-list", use_container_width=True, on_click=lambda: navigate("list"))
+    st.button("Set Threshold", key="nav-threshold", use_container_width=True, on_click=lambda: navigate("threshold"))
 
 
 def add_student_page():
     st.header("Add Student")
-    back_to_home_button()
+    back_to_home_button("back-add")
     ensure_backend()
     system = st.session_state.system
 
     with st.form("add_form", clear_on_submit=False):
         student_id = st.text_input("Student ID")
         name = st.text_input("Student Name")
-        submitted = st.form_submit_button("Start Camera")
+        submitted = st.form_submit_button("Start Camera", type="primary", use_container_width=False)
 
     if submitted:
         if not student_id or not name:
@@ -184,35 +184,44 @@ def add_student_page():
         if ctx.video_processor and ctx.state.playing:
             proc = ctx.video_processor
             if proc.embedding is not None and not st.session_state.get("add_saved", False):
-                sid = st.session_state.add_student_id
-                name = st.session_state.add_student_name
-
-                system.students[sid] = {
-                    "name": name,
-                    "registration_date": datetime.now().isoformat(),
-                }
-                embedding_entry = {
-                    "vector": proc.embedding.tolist(),
-                    "timestamp": datetime.now().isoformat(),
-                    "confidence": 1.0,
-                    "uniqueness": 1.0,
-                }
-                system.embeddings[sid] = {
-                    "name": name,
-                    "embeddings": [embedding_entry],
-                    "embedding": proc.embedding.tolist(),
-                    "registration_date": datetime.now().isoformat(),
-                    "diversity_score": 1 / system.max_embeddings,
-                }
-                system.save_data()
-                st.session_state.add_saved = True
-                st.success(f"Student {name} registered successfully!")
-                st.button("\u2190 Back", on_click=lambda: navigate("home"))
+                # Store captured embedding in session and ask user to Submit
+                st.session_state.add_captured_embedding = proc.embedding.tolist()
+                st.success("Face captured. Click Submit to save.")
+                if st.button("Submit", key="add-submit", type="primary"):
+                    sid = st.session_state.add_student_id
+                    name = st.session_state.add_student_name
+                    # Final validation before save
+                    if not sid or not name:
+                        st.error("Student ID and Name are required.")
+                    elif sid in system.students:
+                        st.error("Student already exists.")
+                    else:
+                        system.students[sid] = {
+                            "name": name,
+                            "registration_date": datetime.now().isoformat(),
+                        }
+                        embedding_entry = {
+                            "vector": st.session_state.add_captured_embedding,
+                            "timestamp": datetime.now().isoformat(),
+                            "confidence": 1.0,
+                            "uniqueness": 1.0,
+                        }
+                        system.embeddings[sid] = {
+                            "name": name,
+                            "embeddings": [embedding_entry],
+                            "embedding": st.session_state.add_captured_embedding,
+                            "registration_date": datetime.now().isoformat(),
+                            "diversity_score": 1 / system.max_embeddings,
+                        }
+                        system.save_data()
+                        st.session_state.add_saved = True
+                        st.success(f"Student {name} registered successfully!")
+                        st.button("\u2190 Back", key="back-add-done", on_click=lambda: navigate("home"))
 
 
 def attendance_page():
     st.header("Take Attendance")
-    back_to_home_button()
+    back_to_home_button("back-attendance")
     ensure_backend()
     system = st.session_state.system
 
@@ -345,7 +354,7 @@ def attendance_page():
 
 def delete_student_page():
     st.header("Delete Student")
-    back_to_home_button()
+    back_to_home_button("back-delete")
     ensure_backend()
     system = st.session_state.system
 
@@ -370,7 +379,7 @@ def delete_student_page():
 
 def list_students_page():
     st.header("Registered Students")
-    back_to_home_button()
+    back_to_home_button("back-list")
     ensure_backend()
     system = st.session_state.system
 
@@ -391,7 +400,7 @@ def list_students_page():
 
 def threshold_page():
     st.header("Set Threshold")
-    back_to_home_button()
+    back_to_home_button("back-threshold")
     ensure_backend()
     system = st.session_state.system
 
